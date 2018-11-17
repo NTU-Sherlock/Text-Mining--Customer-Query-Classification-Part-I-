@@ -1,0 +1,178 @@
+---
+title: Text Mining- Customer Query Classification
+author: Wen-Shiuan Liang
+date: 11/11, 2018
+output:
+  prettydoc::html_pretty:
+    theme: leonids
+    highlight: github
+---
+
+# Part (I) Text Exploration
+### Introduction
+
+**My first intern project in KKday is a text mining project for customer service. In customer services, staff have to answer uninterrupted questions or request from customers. However, in such a fast-growing start-up, the growth of human resources can never catch up that of e-commerce business. In order to solve the root problem, we need to investigate the cause of customer query. That is, find out what topics most customers questions are about. Knowing that it is not possible to see query by query in a traditional way, me and the head of customer service decide to implement machine learning algorithms to solve the problem effectively and efficently.**
+
+### Text Preprocessing
+
+<h4>Data Outlook</h4>
+```{r echo=FALSE}
+###Import order dataset
+data = read.csv ("~/Google Drive/KKday/201805.csv", header = TRUE,stringsAsFactors = FALSE,quote='"')
+df = data[,c(2,3,4,5,8,12,13,14)]
+head(df)
+```
+
+Each row in the data represents a customer's query on certain product_id with timestamp and language used. This dataset contained all questions being asked among products after purchasing. 
+
+<h4> Language Select</h4>
+```{r}
+  df_c = df[which(df$'回覆語系'=='zh-tw' | df$'回覆語系'=='zh-hk' | df$'回覆語系'=='zh-cn'),]
+  df_d = df[!df$'回覆語系'=='zh-tw' & !df$'回覆語系'=='zh-hk' & !df$'回覆語系'=='zh-cn',]
+  #table of different language
+  (cn = table(df_c$'回覆語系'))
+  (foreign = table(df_d$'回覆語系'))
+```
+
+From the table above, we can see most questions are from chinese area.The reason may be that KKday mainly focus in Chinese area. As a result, we target on zh-tw (Taiwan), zh-hk (Hong Kong), zh-cn (China) these three language category in our first text mining project.
+
+<h4>Text Filtering</h4>
+```{r}
+#Choose product 7781 as target
+most_1 = df_c[df_c$'商品編號'==7781,]
+dim(df_c);dim(most_1)
+#Remove duplicate messages/query
+df1= most_1[which(!duplicated(most_1$'訊息內容')),]
+dim(df1)
+#Remove text within one word (Which is usually not informative)
+df = df1[,c(5,1,2)]
+df =  df[nchar(df[,1])>5,]
+dim(df)
+
+#Remove those query with label "note", which is not a question.
+df_note = df[grep('note :',df[,1]),]
+
+if (nrow(df_note)!=0){
+    df2 = df[-grep('note :',df[,1]),]
+  }else{
+    df2 = df
+  }
+dim(df2)
+```
+
+Since different product may have different types of question, let's start simple with one product. We chose a top sales/frequent asked product, 7781, which is the Universal Studio ticket.
+
+We later filter the text to check duplicateion, length > 5, without note label. After filtering, we have 988 query for 7781.
+
+### Text Transformation
+
+<h4>Prepared transformation for Document Term Matrix</h4>
+```{r}
+library(tm)
+library(tmcn)
+library(Rwordseg)
+
+#Transform the data type in to corpus
+corpus = Corpus(VectorSource(df2[,1]))
+#Cleaning upper class, punctuation,number, stopwords
+corpus = tm_map(corpus, content_transformer(tolower))
+corpus = tm_map(corpus, removePunctuation)
+corpus = tm_map(corpus, removeWords, stopwords())
+corpus = tm_map(corpus, stemDocument, language = "english") 
+corpus = tm_map(corpus, function(word) {
+  gsub("[0-9]", "", word)
+})
+
+
+#Import some Chinese Dictionary to increase the accuracy of word segmentation.
+#Check https://pinyin.sogou.com/dict/
+# installDict("travel.scel","travel",dicttype = "scel")
+# installDict("pttword.scel","ptt",dicttype = "scel")
+
+#Import my own dictionary
+# words  = readLines('user.txt')
+# head(words)
+# insertWords(words)
+
+#Transform all Traditional Chinese into Simplified Chinese
+corpus = tm_map(corpus, toTrad)
+#segmentation
+d.corpus <- tm_map(corpus, segmentCN, nature = TRUE)
+#Only noun
+# d.corpus = tm_map(d.corpus, function(sentence) {
+#   noun <- lapply(sentence, function(w) {
+#     w[names(w) == "n"]
+#   })
+#   unlist(noun)
+# })
+d.corpus <- VCorpus(VectorSource(d.corpus))
+#Stopword
+# myStopWords <- readLines('stopw.txt')
+# text <- tm_map(d.corpus, removeWords, myStopWords)
+text = tm_map(d.corpus, stripWhitespace)
+
+dtm2.1 = DocumentTermMatrix(text,control = list(wordLengths = c(2, Inf),bounds = list( global = c(1,Inf),local=c(1,Inf)),weighting = weightTf))
+
+
+```
+
+### Data Exploration - Word Cloud
+```{r}
+library(wordcloud2)
+m1 = as.matrix(dtm2.1)
+v = sort(colSums(m1), decreasing = TRUE) 
+d = data.frame(word = names(v), freq = v)
+wordcloud2(d, color="random-dark",backgroundColor="white")
+
+```
+
+In word cloud, the bigger the word, the more frequent it is. We can see(if you know Chinese) the most frequent terms being used in the question of this product are please, can, ticket, studio, pass, voucher, receive ...etc. Word cloud can give us a general outlook of the text. Sometimes we can discover a hidden insight that we may not gain by human screening.
+
+However, if we want to further analyze the topic of these corpus, we need to used another advance technique, clustering.
+
+### Topic Modeling
+```{r}
+#Topic model
+library(slam)
+library(topicmodels)
+dtm2.2 = dtm2.1[which(row_sums(dtm2.1)>0),]
+k = 7
+lda <- LDA(dtm2.2,k,method="Gibbs")
+tfs = as.data.frame(terms(lda,10),stringsAsFactors = FALSE)
+
+```
+
+We set our topic by 7 (arbitrary). From topic model result we can analyze the relativity within each topic, while comparing the difference between each topic. However, it would be a lot easier for human to read if we can visualize the topic.
+
+
+### Network Analysis Visualization
+```{r}
+for (i in 1:k){
+    tfs[,i] = toTrad(tfs[,i])  
+  }
+adjacent_list = lapply(1:k, function(i) embed(tfs[,i], 2)[, 2:1])
+edgelist = as.data.frame(do.call(rbind, adjacent_list), stringsAsFactors =F)
+  
+topic = unlist(lapply(1:k, function(i) rep(i, 9)))
+edgelist$topic = topic
+tfs
+library(igraph)
+g <- graph.data.frame(edgelist,directed=T )
+l<-layout.fruchterman.reingold(g)
+nodesize = centralization.degree(g)$res
+V(g)$size = log( centralization.degree(g)$res )
+nodeLabel = V(g)$name
+E(g)$color = unlist(lapply(sample(colors()[26:137], 10), function(i) rep(i, 9)));
+unique(E(g)$color)
+
+set.seed = 123
+plot(g, vertex.label= nodeLabel, edge.curved=TRUE, vertex.label.cex =0.8,
+       edge.arrow.size=0.1, vertex.label.family="Heiti TC Light")
+
+```
+
+Now with network analysis chart, we can generate a readable chart that allow us to read the result. We can not only see the sequence of the word, but also understand how each topic intersect on other with certain word.
+
+The topic model is a great tool for people to do EDA in text mining. It generates an intuitive chart for us which is away easier than reading series cold-blood number.
+
+We also conduct other clustering method such as K-means, C-means, dendrogram. But most of them generate extremly unblanced groups, which is not useful for exploration.
